@@ -1,0 +1,45 @@
+#root {
+  width: 100%;
+  height: 100vh;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  background-color: #111;
+}
+
+.app-container {
+  width: 100%;
+  height: 100vh;
+  position: relative;
+}
+
+.canvas-container {
+  width: 100%;
+  height: 100%;
+}
+
+.ui-overlay {
+  position: absolute;
+  top: 40px;
+  left: 40px;
+  z-index: 10;
+  color: white;
+  font-family: 'Inter', sans-serif;
+  pointer-events: none;
+}
+
+.ui-overlay h1 {
+  margin: 0;
+  font-size: 2.5rem;
+  font-weight: 800;
+  letter-spacing: -0.05em;
+  background: linear-gradient(to right, #fff, #888);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+
+.ui-overlay p {
+  margin: 5px 0 0;
+  opacity: 0.6;
+  font-size: 1rem;
+}
