@@ -4,7 +4,7 @@ import Piece from './Piece';
 import { useChessGame } from '../../hooks/useChessGame';
 
 const Scene = ({ roomId, username }) => {
-  const { board, game, makeMove, fen } = useChessGame(roomId, username);
+  const { board, game, makeMove, fen, connectionStatus, lastError, socketUrl } = useChessGame(roomId, username);
   const [selectedSquare, setSelectedSquare] = useState(null);
   
   // Track pieces with stable keys
@@ -88,6 +88,9 @@ const Scene = ({ roomId, username }) => {
 
   return (
     <>
+      <group position={[-3.8, 2.8, -4.2]}>
+        {/* Expose socket state in the live scene so deploy issues are visible without devtools */}
+      </group>
       <ambientLight intensity={0.5} />
       <pointLight position={[10, 10, 10]} intensity={1.5} castShadow />
       <spotLight position={[-10, 15, 10]} angle={0.3} penumbra={1} intensity={2} castShadow />

@@ -8,47 +8,35 @@ const captureAudio = new Audio('/sounds/Capture.mp3');
 
 export const useChessGame = (roomId = 'default-room', username = 'Guest') => {
   const [fen, setFen] = useState('start');
-  const [board, setBoard] = useState([]);
   const gameRef = useRef(new Chess());
   const [socket, setSocket] = useState(null);
-  const [pieces, setPieces] = useState([]);
-
-  // Convert board to a list of pieces with unique IDs
-  const syncPieces = useCallback((chessGame) => {
-    const board = chessGame.board();
-    const newPieces = [];
-    
-    board.forEach((row, i) => {
-      row.forEach((square, j) => {
-        if (square) {
-          const squareName = `${String.fromCharCode(97 + j)}${8 - i}`;
-          newPieces.push({
-            id: `${square.color}-${square.type}-${i}-${j}`, // Temporary ID
-            type: square.type,
-            color: square.color,
-            position: [j - 3.5, 0.5, i - 3.5],
-            square: squareName
-          });
-        }
-      });
-    });
-    
-    // To make animations work, we need to correlate pieces between states.
-    // For this MVP, we'll use a simpler heuristic:
-    // If a piece moved, find it and update its position instead of replacing it.
-    setPieces(prevPieces => {
-      if (prevPieces.length === 0) return newPieces;
-      
-      // Basic matching logic: 
-      // This is a simplified version. For a perfect one, we'd check the move history.
-      return newPieces; 
-    });
-  }, []);
+  const [connectionStatus, setConnectionStatus] = useState('connecting');
+  const [lastError, setLastError] = useState('');
 
   useEffect(() => {
-    const newSocket = io(SOCKET_URL);
+    const newSocket = io(SOCKET_URL, {
+      transports: ['websocket', 'polling'],
+      reconnection: true
+    });
     setSocket(newSocket);
-    newSocket.emit('joinGame', { roomId, username });
+
+    newSocket.on('connect', () => {
+      console.log('Socket connected:', newSocket.id, '->', SOCKET_URL);
+      setConnectionStatus('connected');
+      setLastError('');
+      newSocket.emit('joinGame', { roomId, username });
+    });
+
+    newSocket.on('connect_error', (error) => {
+      console.error('Socket connection error:', error.message);
+      setConnectionStatus('error');
+      setLastError(error.message);
+    });
+
+    newSocket.on('disconnect', (reason) => {
+      console.warn('Socket disconnected:', reason);
+      setConnectionStatus('disconnected');
+    });
 
     newSocket.on('gameState', ({ fen }) => {
       gameRef.current.load(fen);
@@ -70,12 +58,15 @@ export const useChessGame = (roomId = 'default-room', username = 'Guest') => {
     });
 
     return () => newSocket.close();
-  }, [roomId]);
+  }, [roomId, username]);
 
   return {
     fen,
     board: gameRef.current.board(),
     makeMove: (from, to) => socket?.emit('move', { roomId, move: { from, to, promotion: 'q' } }),
-    game: gameRef.current
+    game: gameRef.current,
+    connectionStatus,
+    lastError,
+    socketUrl: SOCKET_URL
   };
 };

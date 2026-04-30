@@ -12,23 +12,35 @@ dotenv.config();
 
 const app = express();
 const httpServer = createServer(app);
-const allowedOrigins = (process.env.CLIENT_URL || '')
+const normalizeOrigin = (origin = '') => origin.trim().replace(/\/+$/, '');
+const allowedOrigins = (process.env.CLIENT_URL || process.env.FRONTEND_URL || '')
   .split(',')
-  .map((origin) => origin.trim())
+  .map(normalizeOrigin)
   .filter(Boolean);
-const corsOrigin = allowedOrigins.length > 0 ? allowedOrigins : true;
-const io = new Server(httpServer, {
-  cors: {
-    origin: corsOrigin,
-    methods: ["GET", "POST"],
-    credentials: true
+const isAllowedOrigin = (origin) => {
+  if (!origin || allowedOrigins.length === 0) {
+    return true;
   }
+
+  return allowedOrigins.includes(normalizeOrigin(origin));
+};
+const corsOptions = {
+  origin: (origin, callback) => {
+    if (isAllowedOrigin(origin)) {
+      callback(null, true);
+      return;
+    }
+
+    callback(new Error(`Origin ${origin} is not allowed by CORS`));
+  },
+  methods: ["GET", "POST"],
+  credentials: true
+};
+const io = new Server(httpServer, {
+  cors: corsOptions
 });
 
-app.use(cors({
-  origin: corsOrigin,
-  credentials: true
-}));
+app.use(cors(corsOptions));
 app.use(express.json());
 
 let isDbConnected = false;
@@ -184,6 +196,7 @@ app.get('/', (req, res) => {
 
 httpServer.listen(PORT, () => {
   console.log(`Server listening on port ${PORT}`);
+  console.log('Allowed client origins:', allowedOrigins.length > 0 ? allowedOrigins : 'all');
 });
 
 
