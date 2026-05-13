@@ -1,17 +1,12 @@
-import React, { useState, useMemo, useEffect, useRef } from 'react';
+import { useState, useMemo } from 'react';
 import Board from './Board';
 import Piece from './Piece';
-import { useChessGame } from '../../hooks/useChessGame';
 
-const Scene = ({ roomId, username }) => {
-  const { board, game, makeMove, fen, connectionStatus, lastError, socketUrl } = useChessGame(roomId, username);
+const Scene = ({ chessGame }) => {
+  const { game, makeMove, fen, lastMove, gameStatus } = chessGame;
   const [selectedSquare, setSelectedSquare] = useState(null);
-  
-  // Track pieces with stable keys
-  // Key format: color-type-originalSquare
-  const [activePieces, setActivePieces] = useState([]);
 
-  useEffect(() => {
+  const activePieces = useMemo(() => {
     const newBoard = game.board();
     const currentPieces = [];
     
@@ -28,51 +23,21 @@ const Scene = ({ roomId, username }) => {
       });
     });
 
-    // Simple heuristic: If we don't have pieces yet, initialize them.
-    // If we do, try to match them to existing ones to keep keys stable.
-    setActivePieces(prev => {
-      if (prev.length === 0) {
-        return currentPieces.map(p => ({ ...p, id: `${p.color}-${p.type}-${p.currentSquare}` }));
-      }
-
-      // Match logic: For every piece in currentPieces, find the best match in prev
-      const matched = [];
-      const usedPrevIds = new Set();
-
-      currentPieces.forEach(curr => {
-        // Find a piece in prev that is the same type/color and was at the same square 
-        // OR is the only one of its kind that moved.
-        // For now, let's use the square name as a fallback if no move was detected.
-        let match = prev.find(p => 
-          !usedPrevIds.has(p.id) && 
-          p.color === curr.color && 
-          p.type === curr.type && 
-          p.currentSquare === curr.currentSquare
-        );
-
-        if (!match) {
-          // If no direct match, it might be the piece that just moved.
-          // In a real implementation, we'd check game.history() to see exactly which piece moved.
-          // For now, we'll recreate pieces that moved. 
-          // To make GSAP work, let's just use a more stable ID system.
-          match = { ...curr, id: `${curr.color}-${curr.type}-${curr.currentSquare}-${Math.random()}` };
-        } else {
-          usedPrevIds.add(match.id);
-          match = { ...match, currentSquare: curr.currentSquare, gridPos: curr.gridPos };
-        }
-        matched.push(match);
-      });
-
-      return matched;
-    });
+    return currentPieces.map((piece) => ({
+      ...piece,
+      id: `${piece.color}-${piece.type}-${piece.currentSquare}`,
+      fenVersion: fen
+    }));
   }, [fen, game]);
 
   const validMoves = useMemo(() => {
-    if (!selectedSquare) return [];
+    if (!selectedSquare || gameStatus !== 'playing') return [];
     return game.moves({ square: selectedSquare, verbose: true }).map(m => m.to);
-  }, [selectedSquare, game]);
+  }, [selectedSquare, game, gameStatus]);
 
   const handleSquareClick = (square) => {
+    if (gameStatus !== 'playing') return;
+
     if (selectedSquare === square) {
       setSelectedSquare(null);
     } else if (selectedSquare && validMoves.includes(square)) {
@@ -80,7 +45,7 @@ const Scene = ({ roomId, username }) => {
       setSelectedSquare(null);
     } else {
       const piece = game.get(square);
-      if (piece) {
+      if (piece && piece.color === game.turn()) {
         setSelectedSquare(square);
       }
     }
@@ -99,6 +64,7 @@ const Scene = ({ roomId, username }) => {
         onSquareClick={handleSquareClick}
         selectedSquare={selectedSquare}
         validMoves={validMoves}
+        lastMove={lastMove}
       />
       
       {activePieces.map((piece) => (

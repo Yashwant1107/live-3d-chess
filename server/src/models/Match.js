@@ -27,6 +27,32 @@ const matchSchema = new mongoose.Schema({
     type: String, 
     default: ''
   },
+  timers: {
+    white: {
+      type: Number,
+      default: 3600
+    },
+    black: {
+      type: Number,
+      default: 3600
+    }
+  },
+  gameStatus: {
+    type: String,
+    default: 'playing'
+  },
+  winner: {
+    type: String,
+    default: null
+  },
+  winReason: {
+    type: String,
+    default: null
+  },
+  drawOffer: {
+    type: String,
+    default: null
+  },
   createdAt: {
     type: Date,
     default: Date.now

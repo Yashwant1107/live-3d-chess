@@ -22,6 +22,10 @@ const isAllowedOrigin = (origin) => {
     return true;
   }
 
+  if (/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(normalizeOrigin(origin))) {
+    return true;
+  }
+
   return allowedOrigins.includes(normalizeOrigin(origin));
 };
 const corsOptions = {
@@ -54,8 +58,173 @@ if (process.env.MONGODB_URI) {
     .catch(err => console.error('MongoDB connection error. Is your server running?', err));
 }
 
+const STARTING_TIME_SECONDS = 60 * 60;
+
+const getMoveColor = (move) => move.color === 'w' ? 'white' : 'black';
+const getOpponent = (color) => color === 'white' ? 'black' : 'white';
+const isSamePlayer = (a, b) => a && b && a.toString() === b.toString();
+
+const pieceNames = {
+  p: 'Pawn',
+  n: 'Knight',
+  b: 'Bishop',
+  r: 'Rook',
+  q: 'Queen',
+  k: 'King'
+};
+
+const buildCapturedPieces = (history) => {
+  const captured = { white: [], black: [] };
+
+  history.forEach((move) => {
+    if (move.captured) {
+      captured[move.color === 'w' ? 'white' : 'black'].push({
+        type: move.captured,
+        color: move.color === 'w' ? 'black' : 'white',
+        name: pieceNames[move.captured] || move.captured
+      });
+    }
+  });
+
+  return captured;
+};
+
+const updateClock = (gameObj) => {
+  if (gameObj.gameStatus !== 'playing') return;
+
+  const now = Date.now();
+  const elapsed = Math.max(0, Math.floor((now - gameObj.lastClockUpdate) / 1000));
+  if (elapsed === 0) return;
+
+  const activeColor = gameObj.chess.turn() === 'w' ? 'white' : 'black';
+  gameObj.timers[activeColor] = Math.max(0, gameObj.timers[activeColor] - elapsed);
+  gameObj.lastClockUpdate = now;
+
+  if (gameObj.timers[activeColor] <= 0) {
+    gameObj.gameStatus = 'ended';
+    gameObj.winner = getOpponent(activeColor);
+    gameObj.winReason = 'Time Out';
+  }
+};
+
+const applyGameOver = (gameObj) => {
+  const game = gameObj.chess;
+
+  if (game.isCheckmate()) {
+    gameObj.gameStatus = 'ended';
+    gameObj.winner = game.turn() === 'w' ? 'black' : 'white';
+    gameObj.winReason = 'Checkmate';
+  } else if (game.isDraw()) {
+    gameObj.gameStatus = 'draw';
+    gameObj.winner = null;
+    gameObj.winReason = game.isStalemate() ? 'Stalemate' : 'Draw';
+  }
+};
+
+const getPublicState = (gameObj) => {
+  updateClock(gameObj);
+
+  const verboseHistory = gameObj.chess.history({ verbose: true });
+  const lastMove = verboseHistory.at(-1);
+
+  return {
+    fen: gameObj.chess.fen(),
+    history: verboseHistory,
+    lastMove: lastMove ? {
+      piece: pieceNames[lastMove.piece] || lastMove.piece,
+      pieceType: lastMove.piece,
+      from: lastMove.from,
+      to: lastMove.to,
+      color: getMoveColor(lastMove),
+      captured: lastMove.captured ? {
+        type: lastMove.captured,
+        name: pieceNames[lastMove.captured] || lastMove.captured
+      } : null,
+      flags: lastMove.flags,
+      san: lastMove.san
+    } : null,
+    capturedPieces: buildCapturedPieces(verboseHistory),
+    currentTurn: gameObj.chess.turn() === 'w' ? 'white' : 'black',
+    timers: gameObj.timers,
+    gameStatus: gameObj.gameStatus,
+    winner: gameObj.winner,
+    winReason: gameObj.winReason,
+    drawOffer: gameObj.drawOffer
+  };
+};
+
+const emitGameState = (roomId, gameObj, eventName = 'gameState', extra = {}) => {
+  io.to(roomId).emit(eventName, {
+    ...getPublicState(gameObj),
+    ...extra
+  });
+};
+
+const createGame = () => ({
+  chess: new Chess(),
+  players: { white: null, black: null },
+  playerNames: { white: null, black: null },
+  matchId: null,
+  timers: { white: STARTING_TIME_SECONDS, black: STARTING_TIME_SECONDS },
+  lastClockUpdate: Date.now(),
+  gameStatus: 'playing',
+  winner: null,
+  winReason: null,
+  drawOffer: null
+});
+
+const createGameFromMatch = (match) => {
+  const gameObj = createGame();
+  gameObj.matchId = match._id;
+
+  if (match.fen) {
+    gameObj.chess.load(match.fen);
+  } else if (match.pgn) {
+    gameObj.chess.loadPgn(match.pgn);
+  }
+
+  gameObj.players.white = match.whitePlayer;
+  gameObj.players.black = match.blackPlayer;
+  gameObj.timers = match.timers || gameObj.timers;
+  gameObj.gameStatus = match.gameStatus || (match.status === 'ongoing' ? 'playing' : match.status);
+  gameObj.winner = match.winner || null;
+  gameObj.winReason = match.winReason || null;
+  gameObj.drawOffer = match.drawOffer || null;
+  gameObj.lastClockUpdate = Date.now();
+
+  return gameObj;
+};
+
+const getPersistedStatus = (gameObj) => {
+  if (gameObj.gameStatus === 'draw') return 'draw';
+  if (gameObj.winner === 'white') return 'white_won';
+  if (gameObj.winner === 'black') return 'black_won';
+  return 'ongoing';
+};
+
+const saveGameState = async (roomId, gameObj) => {
+  if (!isDbConnected || !gameObj.matchId) return;
+
+  try {
+    await Match.findByIdAndUpdate(gameObj.matchId, {
+      roomId,
+      fen: gameObj.chess.fen(),
+      pgn: gameObj.chess.pgn(),
+      timers: gameObj.timers,
+      gameStatus: gameObj.gameStatus,
+      winner: gameObj.winner,
+      winReason: gameObj.winReason,
+      drawOffer: gameObj.drawOffer,
+      status: getPersistedStatus(gameObj),
+      updatedAt: Date.now()
+    });
+  } catch (dbErr) {
+    console.error("Failed to save game state:", dbErr.message);
+  }
+};
+
 // In-memory game state
-// Map of roomId -> { chess: Chess instance, players: { white: userId, black: userId }, matchId: db_id }
+// Map of roomId -> room state
 const games = new Map();
 
 io.on('connection', (socket) => {
@@ -82,16 +251,41 @@ io.on('connection', (socket) => {
     
     // 2. Initialize room if not exists
     if (!games.has(roomId)) {
-      games.set(roomId, {
-        chess: new Chess(),
-        players: { white: null, black: null },
-        matchId: null
-      });
+      let restoredGame = null;
+
+      if (isDbConnected) {
+        try {
+          const existingMatch = await Match.findOne({
+            roomId,
+            status: 'ongoing'
+          }).sort({ updatedAt: -1 });
+
+          if (existingMatch) {
+            restoredGame = createGameFromMatch(existingMatch);
+          }
+        } catch (err) {
+          console.error("Failed to restore match:", err.message);
+        }
+      }
+
+      games.set(roomId, restoredGame || createGame());
     }
     
     const gameObj = games.get(roomId);
     
     // 3. Assign players
+    let playerColor = 'spectator';
+    const playerKey = userId || socket.id;
+    if (!gameObj.players.white || isSamePlayer(gameObj.players.white, playerKey) || gameObj.playerNames.white === username) {
+      gameObj.players.white = playerKey;
+      gameObj.playerNames.white = username;
+      playerColor = 'white';
+    } else if (!gameObj.players.black || isSamePlayer(gameObj.players.black, playerKey) || gameObj.playerNames.black === username) {
+      gameObj.players.black = playerKey;
+      gameObj.playerNames.black = username;
+      playerColor = 'black';
+    }
+
     if (userId) {
       if (!gameObj.players.white) {
         gameObj.players.white = userId;
@@ -105,7 +299,11 @@ io.on('connection', (socket) => {
           const newMatch = new Match({
             roomId: roomId,
             whitePlayer: gameObj.players.white,
-            blackPlayer: gameObj.players.black
+            blackPlayer: gameObj.players.black,
+            fen: gameObj.chess.fen(),
+            pgn: gameObj.chess.pgn(),
+            timers: gameObj.timers,
+            gameStatus: gameObj.gameStatus
           });
           await newMatch.save();
           gameObj.matchId = newMatch._id;
@@ -124,8 +322,8 @@ io.on('connection', (socket) => {
     }
     
     socket.emit('gameState', {
-      fen: gameObj.chess.fen(),
-      history: gameObj.chess.history()
+      ...getPublicState(gameObj),
+      playerColor
     });
   });
 
@@ -133,14 +331,20 @@ io.on('connection', (socket) => {
     const gameObj = games.get(roomId);
     if (!gameObj) return;
     const game = gameObj.chess;
+    updateClock(gameObj);
+    if (gameObj.gameStatus !== 'playing') {
+      socket.emit('error', 'Game is over');
+      emitGameState(roomId, gameObj);
+      return;
+    }
 
     try {
       const result = game.move(move);
       if (result) {
-        io.to(roomId).emit('move', {
-          move: result,
-          fen: game.fen()
-        });
+        gameObj.drawOffer = null;
+        gameObj.lastClockUpdate = Date.now();
+        applyGameOver(gameObj);
+        emitGameState(roomId, gameObj, 'move', { move: result });
         
         let status = 'ongoing';
         if (game.isGameOver()) {
@@ -151,17 +355,11 @@ io.on('connection', (socket) => {
           }
         }
 
-        // 4. Save Every Move directly to MongoDB
+        await saveGameState(roomId, gameObj);
+
+        // 4. Update player stats if game just ended
         if (isDbConnected && gameObj.matchId) {
           try {
-            await Match.findByIdAndUpdate(gameObj.matchId, {
-              fen: game.fen(),
-              pgn: game.pgn(),
-              status: status,
-              updatedAt: Date.now()
-            });
-
-            // 5. Update Player stats if game just ended
             if (status !== 'ongoing' && gameObj.players.white && gameObj.players.black) {
               const whiteInc = status === 'white_won' ? { wins: 1 } : status === 'black_won' ? { losses: 1 } : { draws: 1 };
               const blackInc = status === 'black_won' ? { wins: 1 } : status === 'white_won' ? { losses: 1 } : { draws: 1 };
@@ -171,7 +369,7 @@ io.on('connection', (socket) => {
               console.log(`Game Over in ${roomId}! Winner: ${status}`);
             }
           } catch (dbErr) {
-            console.error("Failed to save move to DB:", dbErr.message);
+            console.error("Failed to update game result:", dbErr.message);
           }
         }
 
@@ -180,6 +378,80 @@ io.on('connection', (socket) => {
       }
     } catch (e) {
       socket.emit('error', 'Invalid move format');
+    }
+  });
+
+  socket.on('undoMove', ({ roomId }) => {
+    const gameObj = games.get(roomId);
+    if (!gameObj || gameObj.gameStatus !== 'playing') return;
+
+    updateClock(gameObj);
+    const undone = gameObj.chess.undo();
+    if (!undone) return;
+
+    gameObj.drawOffer = null;
+    gameObj.lastClockUpdate = Date.now();
+    saveGameState(roomId, gameObj);
+    emitGameState(roomId, gameObj, 'gameState');
+  });
+
+  socket.on('offerDraw', ({ roomId, color }) => {
+    const gameObj = games.get(roomId);
+    if (!gameObj || gameObj.gameStatus !== 'playing') return;
+
+    gameObj.drawOffer = color || (gameObj.chess.turn() === 'w' ? 'white' : 'black');
+    saveGameState(roomId, gameObj);
+    emitGameState(roomId, gameObj, 'gameState');
+  });
+
+  socket.on('respondDraw', ({ roomId, accepted }) => {
+    const gameObj = games.get(roomId);
+    if (!gameObj || gameObj.gameStatus !== 'playing' || !gameObj.drawOffer) return;
+
+    if (accepted) {
+      gameObj.gameStatus = 'draw';
+      gameObj.winner = null;
+      gameObj.winReason = 'Agreement';
+    }
+    gameObj.drawOffer = null;
+    saveGameState(roomId, gameObj);
+    emitGameState(roomId, gameObj, 'gameState');
+  });
+
+  socket.on('resign', ({ roomId, color }) => {
+    const gameObj = games.get(roomId);
+    if (!gameObj || gameObj.gameStatus !== 'playing') return;
+
+    const resigningColor = color === 'black' ? 'black' : 'white';
+    gameObj.gameStatus = 'ended';
+    gameObj.winner = getOpponent(resigningColor);
+    gameObj.winReason = 'Resignation';
+    gameObj.drawOffer = null;
+    saveGameState(roomId, gameObj);
+    emitGameState(roomId, gameObj, 'gameState');
+  });
+
+  socket.on('restartGame', async ({ roomId }) => {
+    const oldGame = games.get(roomId);
+    const nextGame = createGame();
+    if (oldGame) {
+      nextGame.players = oldGame.players;
+      nextGame.playerNames = oldGame.playerNames;
+      nextGame.matchId = oldGame.matchId;
+    }
+    games.set(roomId, nextGame);
+    await saveGameState(roomId, nextGame);
+    emitGameState(roomId, nextGame, 'gameState');
+  });
+
+  socket.on('keepAlive', ({ roomId }, callback) => {
+    const gameObj = games.get(roomId);
+    if (gameObj) {
+      updateClock(gameObj);
+    }
+
+    if (typeof callback === 'function') {
+      callback({ ok: true, time: Date.now() });
     }
   });
 
